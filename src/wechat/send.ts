@@ -4,6 +4,12 @@ import { WeChatApi } from './api.js';
 import { MessageItemType, MessageType, MessageState, TypingStatus, type MessageItem, type OutboundMessage } from './types.js';
 import { uploadFile } from './upload.js';
 import { logger } from '../logger.js';
+import {
+  simulateReadReceiptDelay,
+  simulateTypingDelay,
+  simulateThinkTime,
+  maybeIdlePause,
+} from './antidetect.js';
 
 const TYPING_KEEPALIVE_MS = 5_000;
 
@@ -13,7 +19,9 @@ export function createSender(api: WeChatApi, botAccountId: string) {
   const TICKET_TTL = 24 * 60 * 60 * 1000;
 
   function generateClientId(): string {
-    return `wcc-${Date.now()}-${++clientCounter}`;
+    // Use a jittered timestamp to avoid sequential message IDs
+    const jittered = Date.now() + Math.floor(Math.random() * 1000);
+    return `wcc-${jittered}-${++clientCounter}`;
   }
 
   async function getTypingTicket(userId: string, contextToken?: string): Promise<string> {
@@ -56,9 +64,11 @@ export function createSender(api: WeChatApi, botAccountId: string) {
         return;
       }
 
-      // Keepalive loop
+      // Keepalive loop with jittered timing
       while (!cancelled) {
-        await new Promise(r => setTimeout(r, TYPING_KEEPALIVE_MS));
+        // Add ±1s jitter to keepalive to avoid fixed-interval pattern
+        const jitter = Math.floor((Math.random() - 0.5) * 2000);
+        await new Promise(r => setTimeout(r, TYPING_KEEPALIVE_MS + jitter));
         if (cancelled) break;
         try {
           await api.sendTyping({
@@ -90,6 +100,9 @@ export function createSender(api: WeChatApi, botAccountId: string) {
   }
 
   async function sendText(toUserId: string, contextToken: string, text: string): Promise<void> {
+    // Simulate human reading delay before responding
+    await simulateReadReceiptDelay();
+
     const clientId = generateClientId();
 
     const items: MessageItem[] = [
@@ -110,8 +123,18 @@ export function createSender(api: WeChatApi, botAccountId: string) {
     };
 
     logger.info('Sending text message', { toUserId, clientId, textLength: text.length });
+
+    // Add a small random delay before sending to simulate human typing
+    // This is applied per-chunk so multi-chunk messages also look natural
+    const typingDelay = simulateTypingDelay(text);
+    await new Promise(r => setTimeout(r, Math.min(typingDelay, 3000))); // cap at 3s
+
     await api.sendMessage({ msg });
     logger.info('Text message sent', { toUserId, clientId });
+
+    // Occasionally insert an idle pause after sending (simulates user checking response)
+    // Fire-and-forget — don't block the caller
+    maybeIdlePause().catch(() => {});
   }
 
   async function sendFile(toUserId: string, contextToken: string, filePath: string): Promise<void> {
@@ -126,6 +149,9 @@ export function createSender(api: WeChatApi, botAccountId: string) {
     try {
       const media = await uploadFile(api, toUserId, resolved);
       const clientId = generateClientId();
+
+      // Simulate a short "preparing file" delay before sending
+      await simulateThinkTime();
 
       // Convert aesKeyHex to base64: treat hex string as UTF-8, then base64 encode
       // (matches OpenClaw's format: Buffer.from(hexString).toString("base64"))

@@ -4,8 +4,12 @@
   wechat-claude-code Windows daemon manager
 .DESCRIPTION
   Manages the wechat-claude-code bridge service on Windows.
-  Uses Start-Process in background mode (no Task Scheduler dependency).
-  Supports: start, stop, restart, status, logs
+  Features:
+  - Background process management via Start-Process
+  - Automatic restart on crash (watchdog)
+  - Windows sleep prevention (via keep-alive.ps1)
+  - Daily rotating log files
+  - Supports: start, stop, restart, status, logs
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -14,9 +18,13 @@ $DATA_DIR = "$env:USERPROFILE\.wechat-claude-code"
 $PROJECT_DIR = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $SERVICE_NAME = "wechat-claude-code"
 
-# Ensure log directory
+# Ensure directories
 $LOG_DIR = "$DATA_DIR\logs"
 $null = New-Item -ItemType Directory -Path $LOG_DIR -Force
+
+$WATCHDOG_LOG = "$LOG_DIR\watchdog.log"
+$KEEPALIVE_SCRIPT = Join-Path $PROJECT_DIR "scripts\keep-alive.ps1"
+$WATCHDOG_FILE = "$DATA_DIR\watchdog.pid"
 
 # =============================================================================
 # Helper functions
@@ -29,6 +37,12 @@ function Get-PidFile {
 function Get-ProcessById {
   param([int]$ProcessId)
   try { return Get-Process -Id $ProcessId -ErrorAction Stop } catch { return $null }
+}
+
+function Write-Log {
+  param([string]$Message, [string]$Level = "INFO")
+  $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+  Add-Content -Path $WATCHDOG_LOG -Value "[$time] [$Level] $Message" -Encoding utf8
 }
 
 function Get-RunningPid {
@@ -44,7 +58,6 @@ function Get-RunningPid {
 function Get-NodeBin {
   $node = (Get-Command node -ErrorAction SilentlyContinue).Source
   if (-not $node) {
-    # Check common paths
     $paths = @(
       "$env:ProgramFiles\nodejs\node.exe",
       "${env:ProgramFiles(x86)}\nodejs\node.exe",
@@ -85,12 +98,21 @@ function Start-Daemon {
 
   Write-Host "Starting wechat-claude-code daemon..." -ForegroundColor Cyan
 
-  # Redirect stdout/stderr to daily log files via cmd.exe /c
+  # Start keep-alive (sleep prevention) in background if available
+  if (Test-Path $KEEPALIVE_SCRIPT) {
+    $keepAliveProc = Start-Process -FilePath "powershell" -ArgumentList @(
+      "-ExecutionPolicy", "Bypass",
+      "-File", "`"$KEEPALIVE_SCRIPT`"", "start"
+    ) -WindowStyle Hidden -PassThru
+    $keepAliveProc.Id | Out-File "$DATA_DIR\keepalive.pid" -Encoding utf8
+    Write-Host "  Sleep prevention: active" -ForegroundColor DarkGray
+  }
+
+  # Redirect stdout/stderr to daily log files
   $logTime = Get-Date -Format "yyyy-MM-dd"
   $outLog = "$LOG_DIR\stdout-$logTime.log"
   $errLog = "$LOG_DIR\stderr-$logTime.log"
 
-  # Use Start-Process with redirected output to avoid event-based IO (unreliable in PS 5.1)
   $startArgs = @{
     FilePath               = $nodeBin
     ArgumentList           = "`"$mainJs`" start"
@@ -108,10 +130,14 @@ function Start-Daemon {
 
   Write-Host "Started (PID: $($proc.Id))" -ForegroundColor Green
   Write-Host "Logs: $LOG_DIR" -ForegroundColor DarkGray
+  Write-Host ""
+  Write-Host "  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor DarkGray
+
+  Write-Log "Daemon started (PID: $($proc.Id))" -Level "START"
 }
 
 # =============================================================================
-# Stop
+# Stop (also cleans up keep-alive)
 # =============================================================================
 
 function Stop-Daemon {
@@ -122,39 +148,148 @@ function Stop-Daemon {
     return
   }
 
-  Write-Host "Stopping wechat-claude-code daemon (PID: $procPid)..." -ForegroundColor Cyan
+  Write-Host "Stopping daemon (PID: $procPid)..." -ForegroundColor Cyan
 
-  # On Windows, use taskkill /F to force kill the process tree
+  # Stop keep-alive process
+  $keepAlivePidFile = "$DATA_DIR\keepalive.pid"
+  if (Test-Path $keepAlivePidFile) {
+    $kaPid = Get-Content $keepAlivePidFile -Raw | ForEach-Object { $_.Trim() }
+    if ($kaPid -match '^\d+$') {
+      try {
+        taskkill //F //PID $kaPid 2>$null
+      } catch { }
+    }
+    Remove-Item $keepAlivePidFile -ErrorAction SilentlyContinue
+    Write-Log "Keep-alive process stopped" -Level "STOP"
+  }
+
+  # Stop watchdog if running
+  Stop-Watchdog
+
+  # Kill the daemon process
   try {
-    $process = Start-Process -FilePath 'taskkill' -ArgumentList "/PID $procPid /F" -NoNewWindow -PassThru -Wait
+    taskkill //F //PID $procPid 2>$null
   } catch {
-    # Fallback: kill process directly
     try {
       $process = Get-Process -Id $procPid -ErrorAction Stop
       $process.Kill()
     } catch {
-      Write-Host "Process already terminated" -ForegroundColor DarkGray
+      Write-Host "  Process already terminated" -ForegroundColor DarkGray
     }
   }
 
-  # Wait for process to exit
+  # Wait for exit
   $timeout = 10
   $elapsed = 0
   while ($elapsed -lt $timeout) {
-    $proc = Get-ProcessById -Pid $procPid
+    $proc = Get-ProcessById -ProcessId $procPid
     if (-not $proc) { break }
     Start-Sleep -Milliseconds 500
     $elapsed += 0.5
   }
 
   # Force kill if still alive
-  $proc = Get-ProcessById -Pid $procPid
+  $proc = Get-ProcessById -ProcessId $procPid
   if ($proc) {
     try { $proc.Kill() } catch {}
   }
 
   Remove-Item (Get-PidFile) -ErrorAction SilentlyContinue
   Write-Host "Stopped" -ForegroundColor Green
+  Write-Log "Daemon stopped (PID: $procPid)" -Level "STOP"
+}
+
+# =============================================================================
+# Watchdog (auto-restart on crash)
+# =============================================================================
+
+function Start-Watchdog {
+  $existingWatchdog = Get-WatchdogPid
+  if ($existingWatchdog) {
+    Write-Host "Watchdog already running (PID: $existingWatchdog)" -ForegroundColor Yellow
+    return
+  }
+
+  Write-Host "Starting watchdog..." -ForegroundColor Cyan
+
+  # Start watchdog as a background PowerShell process
+  $watchdogScript = @"
+`$DATA_DIR = '$DATA_DIR'
+`$PROJECT_DIR = '$PROJECT_DIR'
+`$WATCHDOG_LOG = '$WATCHDOG_LOG'
+`$PID_FILE = '$DATA_DIR\$SERVICE_NAME.pid'
+`$WATCHDOG_FILE = '$DATA_DIR\watchdog.pid'
+
+function Write-Log {
+  param([string]`$Message, [string]`$Level = "WATCHDOG")
+  `$time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+  Add-Content -Path `$WATCHDOG_LOG -Value "[`$time] [`$Level] `$Message" -Encoding utf8
+}
+
+function Test-DaemonRunning {
+  if (-not (Test-Path `$PID_FILE)) { return `$false }
+  `$pid = Get-Content `$PID_FILE -Raw | ForEach-Object { `$_.Trim() }
+  if (-not `$pid -or -not (`$pid -match '^\d+`$')) { return `$false }
+  try {
+    `$proc = Get-Process -Id ([int]`$pid) -ErrorAction Stop
+    return `$proc.ProcessName -eq 'node'
+  } catch { return `$false }
+}
+
+# Write our PID
+`$null = New-Item -ItemType Directory -Path "$DATA_DIR\logs" -Force
+`$pid | Out-File `$WATCHDOG_FILE -Encoding utf8
+
+Write-Log "Watchdog started (PID: `$pid)" -Level "START"
+
+while (`$true) {
+  Start-Sleep -Seconds 30
+  if (-not (Test-DaemonRunning)) {
+    Write-Log "Daemon not running, restarting..." -Level "WARN"
+    try {
+      Push-Location `$PROJECT_DIR
+      & "`$PROJECT_DIR\scripts\daemon.ps1" start *>`> `$null
+      Pop-Location
+      Write-Log "Daemon restart initiated" -Level "RESTART"
+    } catch {
+      Write-Log "Restart failed: `$_" -Level "ERROR"
+    }
+  }
+}
+"@
+
+  $watchdogProc = Start-Process -FilePath "powershell" -ArgumentList @(
+    "-ExecutionPolicy", "Bypass",
+    "-NoProfile",
+    "-Command", "& { $watchdogScript }"
+  ) -WindowStyle Hidden -PassThru
+
+  Write-Host "  Watchdog (PID: $($watchdogProc.Id)): active" -ForegroundColor DarkGray
+  Write-Log "Watchdog started (PID: $($watchdogProc.Id))" -Level "START"
+}
+
+function Stop-Watchdog {
+  if (Test-Path $WATCHDOG_FILE) {
+    $watchdogPid = Get-Content $WATCHDOG_FILE -Raw | ForEach-Object { $_.Trim() }
+    if ($watchdogPid -match '^\d+$') {
+      try {
+        taskkill //F //PID $watchdogPid 2>$null
+        Write-Log "Watchdog stopped (PID: $watchdogPid)" -Level "STOP"
+      } catch { }
+    }
+    Remove-Item $WATCHDOG_FILE -ErrorAction SilentlyContinue
+  }
+}
+
+function Get-WatchdogPid {
+  if (-not (Test-Path $WATCHDOG_FILE)) { return $null }
+  $pid = Get-Content $WATCHDOG_FILE -Raw | ForEach-Object { $_.Trim() }
+  if (-not $pid -or -not ($pid -match '^\d+$')) { return $null }
+  try {
+    $proc = Get-Process -Id ([int]$pid) -ErrorAction Stop
+    if ($proc.ProcessName -eq 'powershell') { return [int]$pid }
+    return $null
+  } catch { return $null }
 }
 
 # =============================================================================
@@ -163,10 +298,35 @@ function Stop-Daemon {
 
 function Get-Status {
   $procPid = Get-RunningPid
+  $watchdogPid = Get-WatchdogPid
+  $keepAlivePidFile = "$DATA_DIR\keepalive.pid"
+  $keepAliveRunning = $false
+  if (Test-Path $keepAlivePidFile) {
+    $kaPid = Get-Content $keepAlivePidFile -Raw | ForEach-Object { $_.Trim() }
+    if ($kaPid -match '^\d+$') {
+      try {
+        $proc = Get-Process -Id ([int]$kaPid) -ErrorAction Stop
+        $keepAliveRunning = $proc.ProcessName -eq 'powershell'
+      } catch { }
+    }
+  }
+
   if ($procPid) {
-    Write-Host "Running (PID: $procPid)" -ForegroundColor Green
+    Write-Host "Daemon:      Running (PID: $procPid)" -ForegroundColor Green
   } else {
-    Write-Host "Not running" -ForegroundColor Yellow
+    Write-Host "Daemon:      Not running" -ForegroundColor Yellow
+  }
+
+  if ($watchdogPid) {
+    Write-Host "Watchdog:    Running (PID: $watchdogPid)" -ForegroundColor Green
+  } else {
+    Write-Host "Watchdog:    Inactive" -ForegroundColor DarkGray
+  }
+
+  if ($keepAliveRunning) {
+    Write-Host "Keep-alive:  Active" -ForegroundColor Green
+  } else {
+    Write-Host "Keep-alive:  Inactive" -ForegroundColor DarkGray
   }
 }
 
@@ -192,7 +352,6 @@ function Show-Logs {
   }
 
   if (-not $found) {
-    # Look for older logs
     $files = Get-ChildItem "$LOG_DIR\*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 3
     if ($files) {
       foreach ($f in $files) {
@@ -212,25 +371,31 @@ function Show-Logs {
 $command = $args[0]
 
 switch ($command) {
-  'start'   { Start-Daemon }
+  'start'   {
+    Start-Daemon
+    Start-Watchdog
+  }
   'stop'    { Stop-Daemon }
   'restart' {
     Stop-Daemon
     Start-Sleep -Seconds 2
     Start-Daemon
+    Start-Watchdog
   }
   'status'  { Get-Status }
   'logs'    { Show-Logs }
   default {
     Write-Host @"
 Usage: daemon.ps1 {start|stop|restart|status|logs}
+
 Platform: Windows
+Features: Sleep prevention, Watchdog auto-restart, Daily logs
 
 Commands:
-  start     Start the daemon in background
-  stop      Stop the daemon
+  start     Start the daemon (with sleep prevention and watchdog)
+  stop      Stop the daemon and all helpers
   restart   Restart the daemon
-  status    Check if running
+  status    Show daemon, watchdog, and sleep-prevention status
   logs      View recent logs
 "@
   }

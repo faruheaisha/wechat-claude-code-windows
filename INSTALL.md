@@ -53,12 +53,25 @@ npm install
 ### 方法一：启动文件夹（推荐）
 
 1. 按 `Win + R`，输入 `shell:startup`，回车
-2. 创建文件 `start-wechat-bridge.bat`，内容：
-```batch
-@echo off
-cd /d %USERPROFILE%\.claude\skills\wechat-claude-code-windows
-powershell -ExecutionPolicy Bypass -File scripts\daemon.ps1 start
+2. 创建文件 `start-wechat-bridge.ps1`，内容：
+```powershell
+# 延迟 30 秒后启动，确保网络已就绪
+Start-Sleep -Seconds 30
+cd $env:USERPROFILE\.claude\skills\wechat-claude-code-windows
+& ".\scripts\daemon.ps1" start
 ```
+3. 将该脚本的快捷方式放入启动文件夹
+
+### 方法二：任务计划程序（更可靠）
+
+1. 打开"任务计划程序"
+2. 创建任务：
+   - 名称：`WeChat Claude Code Bridge`
+   - 触发器：登录时 + 延迟 30 秒
+   - 操作：启动程序 → `powershell`
+   - 参数：`-ExecutionPolicy Bypass -File "%USERPROFILE%\.claude\skills\wechat-claude-code-windows\scripts\daemon.ps1" start`
+   - 勾选"不管用户是否登录都要运行"
+   - 勾选"使用最高权限运行"（Powercfg 防休眠需要管理员权限）
 
 ### 方法二：任务计划程序
 

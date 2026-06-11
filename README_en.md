@@ -25,6 +25,9 @@ This is a **Windows port** of [Wechat-ggGitHub/wechat-claude-code](https://githu
 | **"Typing..." indicator** | WeChat shows a typing indicator while Claude is working, so you always know it's on it. |
 | **Two-way files** | Send images, Word docs, PDFs for Claude to analyze. Files Claude generates get pushed directly to WeChat. |
 | **Timeout reassurance** | Task taking longer than 5 minutes? You'll get an automatic message letting you know it's still working. |
+| **24/7 operation** | Built-in sleep prevention, watchdog auto-restart, and health monitoring keep the service running continuously. |
+| **Anti-detection** | Randomized poll intervals, human-like typing speed, random think delays, UA rotation — mimics real user behavior. |
+| **Auto-recovery** | Connection health checks with exponential backoff retry — automatically resumes after network interruptions. |
 
 ---
 
@@ -84,11 +87,18 @@ Open WeChat and send a message to your new "friend".
 ### Manage the service
 
 ```powershell
-npm run daemon -- status    # Check if running
-npm run daemon -- stop      # Stop the service
-npm run daemon -- restart   # Restart (after code updates)
+npm run daemon -- status    # Full status (daemon, watchdog, sleep prevention)
+npm run daemon -- stop      # Stop all services (daemon + watchdog + keep-alive)
+npm run daemon -- restart   # Restart after code updates
 npm run daemon -- logs      # View recent logs
 ```
+
+`start` launches three components:
+- **Main process** — Node.js bridge service
+- **Watchdog** — Checks the main process every 30s, auto-restarts on crash
+- **Keep-alive** — Prevents Windows from sleeping, ensuring 24/7 uptime
+
+> **Tip:** For true 7×24 operation, pair with Task Scheduler for auto-start on boot (see INSTALL.md).
 
 ---
 
@@ -146,18 +156,27 @@ Compared to the original macOS/Linux version, this Windows fork includes:
 |--------|-------------|
 | **daemon.ps1** | PowerShell script replacing bash daemon.sh, uses `System.Diagnostics.Process` for background process management |
 | **provider.ts** | Uses `claude.cmd` command name on Windows, adds `shell: true` for .cmd resolution |
-| **Process killing** | Uses `taskkill` instead of `SIGTERM` (Windows doesn't support POSIX signals) |
+| **Process killing** | Uses `taskkill` instead of `SIGTERM` (Windows doesn't support POSIX signals); watchdog auto-restarts on crash |
 | **Path handling** | Added Windows absolute path regex (`C:\...`), uses `USERPROFILE` env var for tilde resolution |
 | **chmod skip** | Existing `process.platform !== 'win32'` guards in `store.ts` already handle this |
 | **Auto-start** | Use Windows Startup folder or Task Scheduler for auto-start on boot (see INSTALL.md) |
+| **Sleep prevention** | `keep-alive.ps1` uses Win32 API `SetThreadExecutionState` + Powercfg to prevent sleep |
+| **Anti-detection** | `antidetect.ts` — poll interval jitter, human-like typing speed simulation, random think delays, UA rotation, message gap randomization |
+| **Connection resilience** | Health checks (every 5 min), exponential backoff retry, degraded-mode fallback after max consecutive failures |
 
 ---
 
 ## Roadmap
 
-- **Message queue optimization** — Consecutive messages can produce mixed-up replies. Working on a better queuing strategy.
-- **Prevent sleep** — Use Windows power settings to keep the system awake so sleep doesn't interrupt the service.
-- **Resume desktop session** — Chat on your computer for a while, then continue the same session from WeChat on the go.
+In development:
+- **Message queue optimization** — Consecutive messages can produce mixed-up replies
+- **Resume desktop session** — Chat on your computer, then continue from WeChat on the go
+
+Implemented:
+- ✅ **Sleep prevention** — `SetThreadExecutionState` + Powercfg keeps the system awake
+- ✅ **Watchdog auto-restart** — Background process checks every 30s, auto-restarts on crash
+- ✅ **Connection health checks** — API connectivity tested every 5 min, auto-recovery
+- ✅ **Anti-detection** — Poll jitter, human-like typing, random think delays, UA rotation, message gap randomization
 
 ---
 

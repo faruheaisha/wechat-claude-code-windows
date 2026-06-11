@@ -25,6 +25,9 @@
 | **"正在输入..."提示** | Claude 处理时微信会显示"对方正在输入..."，让你随时知道它正在工作。 |
 | **双端文件传输** | 发送图片、Word、PDF 给 Claude 分析；Claude 生成的文件自动推送到微信。 |
 | **超时安抚** | 任务超过 5 分钟未响应，会自动发送消息告知你仍在处理中。 |
+| **24h 连续运行** | 内置防休眠唤醒 + 看门狗自动重启 + 活跃监听，确保服务持续在线。 |
+| **反检测机制** | 随机间隔轮询、类人打字速度、随机思考延迟、UA 轮换，模拟真实用户行为。 |
+| **断线自动恢复** | 连接健康检查和指数退避重试，网络中断后自动恢复。 |
 
 ---
 
@@ -84,11 +87,18 @@ npm run daemon -- start
 ### 服务管理
 
 ```powershell
-npm run daemon -- status    # 查看运行状态
-npm run daemon -- stop      # 停止服务
+npm run daemon -- status    # 查看运行状态（含 Watchdog 和防休眠状态）
+npm run daemon -- stop      # 停止服务（同时清理防休眠和 watchdog）
 npm run daemon -- restart   # 重启（代码更新后使用）
 npm run daemon -- logs      # 查看日志
 ```
+
+`start` 命令会自动启动：
+- **主进程** — Node.js 桥接服务
+- **Watchdog** — 每 30 秒检测主进程，崩溃时自动重启
+- **防休眠** — 防止 Windows 进入睡眠状态，确保 24h 在线
+
+> **提示:** 要完全实现 7×24 运行，请配合任务计划程序设置开机自启（见 INSTALL.md）。
 
 ---
 
@@ -136,18 +146,28 @@ npm run daemon -- logs      # 查看日志
 |--------|------|
 | **daemon.ps1** | 使用 PowerShell 脚本替代 bash daemon.sh，通过 System.Diagnostics.Process 管理后台进程 |
 | **provider.ts** | 修正 claude 命令路径（Windows 使用 claude.cmd），添加 shell:true 以解析 .cmd 文件 |
-| **进程管理** | 使用 `taskkill` 替代 `SIGTERM` 信号（Windows 不支持 POSIX 信号） |
+| **进程管理** | 使用 `taskkill` 替代 `SIGTERM` 信号（Windows 不支持 POSIX 信号）；内置看门狗自动重启崩溃进程 |
 | **路径处理** | 新增 Windows 绝对路径（`C:\...`）的正则匹配；使用 `USERPROFILE` 替代 `HOME` |
 | **chmod 跳过** | 原有 `chmodSync` 在 Windows 上自动跳过（已有 `process.platform !== 'win32'` 守卫） |
-| **自动启动** | 推荐使用「启动」文件夹或任务计划程序实现开机自启（详见 INSTALL_zh.md） |
+| **自动启动** | 推荐使用「启动」文件夹或任务计划程序实现开机自启（详见 INSTALL.md） |
+| **防休眠** | `keep-alive.ps1` 使用 Win32 API `SetThreadExecutionState` 和 Powercfg 防止系统休眠 |
+| **反检测** | `antidetect.ts` 轮询间隔抖动、类人打字速度模拟、随机思考时间、用户代理轮换、消息间隔随机化 |
+| **连接韧性** | 健康检查（每 5 分钟）、指数退避重试、最大连续失败后降级为慢速恢复模式 |
 
 ---
 
 ## 路线图
 
+这些功能已在开发中：
+
 - **消息队列优化** — 连续消息可能导致回复混乱，正在改进队列策略
-- **系统休眠防护** — 使用电源设置防止 Windows 休眠时服务中断
 - **桌面会话延续** — 在电脑上聊天后，从微信继续同一会话
+
+已实现：
+- ✅ **系统休眠防护** — `SetThreadExecutionState` + Powercfg 防止 Windows 休眠中断服务
+- ✅ **看门狗自动重启** — 后台进程每 30 秒检测，崩溃时自动拉起
+- ✅ **连接健康检查** — 每 5 分钟检测 API 连通性，故障时自动恢复
+- ✅ **反检测机制** — 轮询间隔抖动、类人打字速度、随机思考延迟、UA 轮换、消息间隔随机化
 
 ---
 
