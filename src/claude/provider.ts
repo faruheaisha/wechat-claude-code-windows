@@ -139,15 +139,23 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     };
 
     try {
-      // On Windows, the 'claude' command is typically 'claude.cmd' or 'claude'
-      // spawned via cmd.exe. We try the plain name which works if node is in PATH.
+      // On Windows, run 'claude.cmd' via cmd.exe to resolve the .cmd file properly
+      // without using shell:true (which triggers a security warning).
       const claudeCmd = process.platform === 'win32' ? 'claude.cmd' : 'claude';
-      child = spawn(claudeCmd, args, {
+      const spawnOptions: import('node:child_process').SpawnOptions = {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
-        shell: process.platform === 'win32', // On Windows, use shell to resolve .cmd files
-      });
+      };
+      if (process.platform === 'win32') {
+        child = spawn(
+          process.env.COMSPEC || 'cmd.exe',
+          ['/d', '/s', '/c', claudeCmd, ...args],
+          spawnOptions,
+        );
+      } else {
+        child = spawn(claudeCmd, args, spawnOptions);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       finish({ text: '', sessionId: '', error: `Failed to spawn claude: ${msg}` });

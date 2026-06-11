@@ -27,17 +27,17 @@ function Get-PidFile {
 }
 
 function Get-ProcessById {
-  param([int]$Pid)
-  try { return Get-Process -Id $Pid -ErrorAction Stop } catch { return $null }
+  param([int]$ProcessId)
+  try { return Get-Process -Id $ProcessId -ErrorAction Stop } catch { return $null }
 }
 
 function Get-RunningPid {
   $pidFile = Get-PidFile
   if (-not (Test-Path $pidFile)) { return $null }
-  $pid = Get-Content $pidFile -Raw | ForEach-Object { $_.Trim() }
-  if (-not $pid -or -not ($pid -match '^\d+$')) { return $null }
-  $proc = Get-ProcessById -Pid ([int]$pid)
-  if ($proc -and $proc.ProcessName -eq 'node') { return [int]$pid }
+  $rawPid = Get-Content $pidFile -Raw | ForEach-Object { $_.Trim() }
+  if (-not $rawPid -or -not ($rawPid -match '^\d+$')) { return $null }
+  $proc = Get-ProcessById -ProcessId ([int]$rawPid)
+  if ($proc -and $proc.ProcessName -eq 'node') { return [int]$rawPid }
   return $null
 }
 
@@ -85,56 +85,26 @@ function Start-Daemon {
 
   Write-Host "Starting wechat-claude-code daemon..." -ForegroundColor Cyan
 
-  # Build environment block for the child process
-  $envBlock = @{}
-  foreach ($key in $env.Keys) { $envBlock[$key] = $env[$key] }
-
-  # Start node process in background
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $nodeBin
-  $psi.Arguments = "`"$mainJs`" start"
-  $psi.WorkingDirectory = $PROJECT_DIR
-  $psi.UseShellExecute = $false
-  $psi.CreateNoWindow = $true
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
-  $psi.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
-
-  # Pass environment variables
-  foreach ($kv in $envBlock.GetEnumerator()) {
-    $null = $psi.EnvironmentVariables.Add($kv.Key, $kv.Value)
-  }
-
-  $proc = New-Object System.Diagnostics.Process
-  $proc.StartInfo = $psi
-  $null = $proc.Start()
-
-  # Write PID file
-  $proc.Id | Out-File (Get-PidFile) -Encoding utf8
-
-  # Start async stdout/stderr logging
+  # Redirect stdout/stderr to daily log files via cmd.exe /c
   $logTime = Get-Date -Format "yyyy-MM-dd"
   $outLog = "$LOG_DIR\stdout-$logTime.log"
   $errLog = "$LOG_DIR\stderr-$logTime.log"
 
-  # Read stdout asynchronously
-  $proc.OutputDataReceived.Add({
-    param($sender, $e)
-    if ($e.Data) {
-      Add-Content -Path $outLog -Value $e.Data -Encoding utf8
-    }
-  })
-  $proc.BeginOutputReadLine()
+  # Use Start-Process with redirected output to avoid event-based IO (unreliable in PS 5.1)
+  $startArgs = @{
+    FilePath               = $nodeBin
+    ArgumentList           = "`"$mainJs`" start"
+    WorkingDirectory       = $PROJECT_DIR
+    NoNewWindow            = $false
+    WindowStyle            = 'Hidden'
+    RedirectStandardOutput = $outLog
+    RedirectStandardError  = $errLog
+    PassThru               = $true
+  }
+  $proc = Start-Process @startArgs
 
-  # Read stderr asynchronously
-  $proc.ErrorDataReceived.Add({
-    param($sender, $e)
-    if ($e.Data) {
-      Add-Content -Path $errLog -Value $e.Data -Encoding utf8
-    }
-  })
-  $proc.BeginErrorReadLine()
+  # Write PID file
+  $proc.Id | Out-File (Get-PidFile) -Encoding utf8
 
   Write-Host "Started (PID: $($proc.Id))" -ForegroundColor Green
   Write-Host "Logs: $LOG_DIR" -ForegroundColor DarkGray
@@ -145,23 +115,22 @@ function Start-Daemon {
 # =============================================================================
 
 function Stop-Daemon {
-  $pid = Get-RunningPid
-  if (-not $pid) {
+  $procPid = Get-RunningPid
+  if (-not $procPid) {
     Write-Host "Not running" -ForegroundColor Yellow
     Remove-Item (Get-PidFile) -ErrorAction SilentlyContinue
     return
   }
 
-  Write-Host "Stopping wechat-claude-code daemon (PID: $pid)..." -ForegroundColor Cyan
+  Write-Host "Stopping wechat-claude-code daemon (PID: $procPid)..." -ForegroundColor Cyan
 
-  # Try graceful shutdown first (SIGINT via CtrlC simulation)
+  # On Windows, use taskkill /F to force kill the process tree
   try {
-    # On Windows, use taskkill to send Ctrl+C (SIGINT equivalent)
-    $process = Start-Process -FilePath 'taskkill' -ArgumentList "/PID $pid /F" -NoNewWindow -PassThru -Wait
+    $process = Start-Process -FilePath 'taskkill' -ArgumentList "/PID $procPid /F" -NoNewWindow -PassThru -Wait
   } catch {
-    # Fallback: kill process tree
+    # Fallback: kill process directly
     try {
-      $process = Get-Process -Id $pid -ErrorAction Stop
+      $process = Get-Process -Id $procPid -ErrorAction Stop
       $process.Kill()
     } catch {
       Write-Host "Process already terminated" -ForegroundColor DarkGray
@@ -172,14 +141,14 @@ function Stop-Daemon {
   $timeout = 10
   $elapsed = 0
   while ($elapsed -lt $timeout) {
-    $proc = Get-ProcessById -Pid $pid
+    $proc = Get-ProcessById -Pid $procPid
     if (-not $proc) { break }
     Start-Sleep -Milliseconds 500
     $elapsed += 0.5
   }
 
   # Force kill if still alive
-  $proc = Get-ProcessById -Pid $pid
+  $proc = Get-ProcessById -Pid $procPid
   if ($proc) {
     try { $proc.Kill() } catch {}
   }
@@ -193,9 +162,9 @@ function Stop-Daemon {
 # =============================================================================
 
 function Get-Status {
-  $pid = Get-RunningPid
-  if ($pid) {
-    Write-Host "Running (PID: $pid)" -ForegroundColor Green
+  $procPid = Get-RunningPid
+  if ($procPid) {
+    Write-Host "Running (PID: $procPid)" -ForegroundColor Green
   } else {
     Write-Host "Not running" -ForegroundColor Yellow
   }
