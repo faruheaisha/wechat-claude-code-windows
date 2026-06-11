@@ -10,13 +10,14 @@ import {
 } from './antidetect.js';
 
 const SESSION_EXPIRED_ERRCODE = -14;
-const SESSION_EXPIRED_PAUSE_MS = 60 * 60 * 1000; // 1 hour
-const SESSION_EXPIRED_JITTER_MS = 10 * 60 * 1000; // ±10 min jitter
+const SESSION_EXPIRED_RETRY_INITIAL_MS = 5_000;  // first retry after 5s, not 1 hour
+const SESSION_EXPIRED_RETRY_MAX_MS = 60_000;      // cap at 1 min between retries
 const BACKOFF_THRESHOLD = 3;
 const BACKOFF_LONG_MS = 30_000;
 const BACKOFF_SHORT_MS = 3_000;
 const BASE_POLL_INTERVAL_MS = 3_000;
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // every 5 min
+const KEEPALIVE_INTERVAL_MS = 15 * 60 * 1000;    // session keepalive every 15 min
 const MAX_CONSECUTIVE_FAILURES = 20; // max before entering error state
 const RECOVERY_CHECK_INTERVAL_MS = 60_000; // retry health check every 60s when recovering
 const MSG_DEDUP_CAPACITY = 2000;
@@ -31,8 +32,10 @@ export function createMonitor(api: WeChatApi, callbacks: MonitorCallbacks) {
   let stopped = false;
   const recentMsgIds = new Set<number>();
   let lastHealthCheck = Date.now();
+  let lastKeepalive = Date.now();
   let healthStatus: 'ok' | 'degraded' | 'failed' = 'ok';
   let consecutiveFailures = 0;
+  let sessionExpiredRetryMs = SESSION_EXPIRED_RETRY_INITIAL_MS;
 
   /**
    * Health check: verify API connectivity by requesting bot config.
@@ -81,6 +84,23 @@ export function createMonitor(api: WeChatApi, callbacks: MonitorCallbacks) {
           }
         }
 
+        // ---- Keepalive: send periodic lightweight request to keep session alive ----
+        if (Date.now() - lastKeepalive > KEEPALIVE_INTERVAL_MS) {
+          lastKeepalive = Date.now();
+          try {
+            const resp = await api.getConfig('health-check', undefined);
+            if (resp.ret === 0) {
+              logger.debug('Keepalive: session refreshed');
+            } else if (resp.ret === SESSION_EXPIRED_ERRCODE) {
+              logger.warn('Keepalive: session expired, clearing sync buffer');
+              saveSyncBuf('');
+              sessionExpiredRetryMs = SESSION_EXPIRED_RETRY_INITIAL_MS;
+            }
+          } catch (err) {
+            logger.warn('Keepalive: request failed', { error: String(err) });
+          }
+        }
+
         // If in recovery mode (after many failures), check health before polling
         if (healthStatus === 'failed' || healthStatus === 'degraded') {
           const recovered = await checkHealth();
@@ -106,12 +126,16 @@ export function createMonitor(api: WeChatApi, callbacks: MonitorCallbacks) {
         const resp = await api.getUpdates(buf || undefined);
 
         if (resp.ret === SESSION_EXPIRED_ERRCODE) {
-          logger.warn('Session expired, pausing with jitter');
-          callbacks.onSessionExpired();
+          logger.warn('Session expired, retrying with backoff');
 
-          // Jitter the pause to avoid synchronous timing
-          const jitteredPause = SESSION_EXPIRED_PAUSE_MS + randomInt(-SESSION_EXPIRED_JITTER_MS, SESSION_EXPIRED_JITTER_MS);
-          await sleep(Math.max(jitteredPause, 5_000), controller.signal);
+          // ---- Clear stale sync buffer on session expiry ----
+          saveSyncBuf('');
+
+          // Retry with exponential backoff instead of waiting 1 hour
+          callbacks.onSessionExpired();
+          logger.info('Monitor: session expired, retrying with backoff', { retryMs: sessionExpiredRetryMs });
+          await sleep(sessionExpiredRetryMs, controller.signal);
+          sessionExpiredRetryMs = Math.min(sessionExpiredRetryMs * 2, SESSION_EXPIRED_RETRY_MAX_MS);
           consecutiveFailures = 0;
           continue;
         }
@@ -156,6 +180,7 @@ export function createMonitor(api: WeChatApi, callbacks: MonitorCallbacks) {
         }
 
         consecutiveFailures = 0;
+        sessionExpiredRetryMs = SESSION_EXPIRED_RETRY_INITIAL_MS;
         if (healthStatus !== 'ok') healthStatus = 'ok';
       } catch (err) {
         if (controller.signal.aborted) {
@@ -190,10 +215,6 @@ export function createMonitor(api: WeChatApi, callbacks: MonitorCallbacks) {
   }
 
   return { run, stop };
-}
-
-function randomInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
