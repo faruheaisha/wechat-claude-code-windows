@@ -56,8 +56,8 @@ fi
 cd "$INSTALL_DIR"
 
 # ── 4. Install dependencies + build ────────────────────────────────────────
-echo "[4/6] Installing dependencies..."
-npm install --omit=dev
+echo "[4/6] Installing dependencies (including build tools)..."
+npm install
 echo "  Build: OK"
 
 # ── 5. Install Claude Code CLI ────────────────────────────────────────────
