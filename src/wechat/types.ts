@@ -1,5 +1,5 @@
 // WeChat Work (企业微信) protocol type definitions
-// Extracted from the ClawBot WeChat plugin API
+// WeChat Bot API (ilink) type definitions
 
 // ── Enums ──────────────────────────────────────────────────────────────────
 

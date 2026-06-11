@@ -238,4 +238,4 @@ Implemented:
 ### Credits
 
 - Original project by [Wechat-ggGitHub](https://github.com/Wechat-ggGitHub) (macOS/Linux)
-- WeChat Bot API by iBot / ClawBot team
+- WeChat Bot API by iBot / ilink team

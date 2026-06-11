@@ -494,6 +494,26 @@ async function sendToClaude(
       }
     }
 
+    // Auto-fetch URLs in user message
+    const urls = extractUrls(prompt);
+    if (urls.length > 0) {
+      let urlContent = '';
+      for (const url of urls.slice(0, 3)) { // max 3 URLs per message
+        try {
+          logger.info('Auto-fetching URL content', { url });
+          const text = await fetchUrlContent(url);
+          if (text) {
+            urlContent += `\n[${url}] 的内容:\n${text.slice(0, 3000)}\n---\n`;
+          }
+        } catch (err) {
+          logger.warn('Failed to fetch URL', { url, error: String(err) });
+        }
+      }
+      if (urlContent) {
+        prompt = `${prompt}\n\n用户发送的链接内容已自动获取：\n${urlContent}`;
+      }
+    }
+
     let textBuffer = '';
     let anySent = false;
     let lastSentTime = Date.now();
@@ -686,6 +706,57 @@ async function sendToClaude(
     if (activeControllers.get(account.accountId) === abortController) {
       activeControllers.delete(account.accountId);
     }
+  }
+}
+
+// ── URL auto-fetch helpers ───────────────────────────────────────────────
+
+/** Extract http/https URLs from text. */
+function extractUrls(text: string): string[] {
+  const urlRegex = /https?:\/\/[^\s'"()\[\]{}|<>，。]+/g;
+  const matches = text.match(urlRegex);
+  if (!matches) return [];
+  // Deduplicate
+  return [...new Set(matches)];
+}
+
+/** Fetch a URL and return its text content. Limited to 10s timeout. */
+async function fetchUrlContent(url: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+      redirect: 'follow',
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    // Simple extraction: strip HTML tags, keep text
+    const stripped = html
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
+      .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
+      .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
+    return stripped.slice(0, 3000);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -230,4 +230,4 @@ journalctl -u wechat-bridge -f
 ### 致谢
 
 - 感谢 [Wechat-ggGitHub](https://github.com/Wechat-ggGitHub) 的原始 macOS 版项目
-- 感谢 iBot / ClawBot 团队的微信 Bot API
+- 感谢 iBot / ilink 团队的微信 Bot API

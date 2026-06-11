@@ -154,7 +154,7 @@ export function createSender(api: WeChatApi, botAccountId: string) {
       await simulateThinkTime();
 
       // Convert aesKeyHex to base64: treat hex string as UTF-8, then base64 encode
-      // (matches OpenClaw's format: Buffer.from(hexString).toString("base64"))
+      // (matches ilink API format: Buffer.from(hexString).toString("base64"))
       const aesKeyBase64 = Buffer.from(media.aesKeyHex).toString('base64');
 
       let item: MessageItem;
