@@ -210,58 +210,18 @@ function Start-Watchdog {
     return
   }
 
-  Write-Host "Starting watchdog..." -ForegroundColor Cyan
-
-  # Start watchdog as a background PowerShell process
-  $watchdogScript = @"
-`$DATA_DIR = '$DATA_DIR'
-`$PROJECT_DIR = '$PROJECT_DIR'
-`$WATCHDOG_LOG = '$WATCHDOG_LOG'
-`$PID_FILE = '$DATA_DIR\$SERVICE_NAME.pid'
-`$WATCHDOG_FILE = '$DATA_DIR\watchdog.pid'
-
-function Write-Log {
-  param([string]`$Message, [string]`$Level = "WATCHDOG")
-  `$time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-  Add-Content -Path `$WATCHDOG_LOG -Value "[`$time] [`$Level] `$Message" -Encoding utf8
-}
-
-function Test-DaemonRunning {
-  if (-not (Test-Path `$PID_FILE)) { return `$false }
-  `$pid = Get-Content `$PID_FILE -Raw | ForEach-Object { `$_.Trim() }
-  if (-not `$pid -or -not (`$pid -match '^\d+`$')) { return `$false }
-  try {
-    `$proc = Get-Process -Id ([int]`$pid) -ErrorAction Stop
-    return `$proc.ProcessName -eq 'node'
-  } catch { return `$false }
-}
-
-# Write our PID
-`$null = New-Item -ItemType Directory -Path "$DATA_DIR\logs" -Force
-`$pid | Out-File `$WATCHDOG_FILE -Encoding utf8
-
-Write-Log "Watchdog started (PID: `$pid)" -Level "START"
-
-while (`$true) {
-  Start-Sleep -Seconds 30
-  if (-not (Test-DaemonRunning)) {
-    Write-Log "Daemon not running, restarting..." -Level "WARN"
-    try {
-      Push-Location `$PROJECT_DIR
-      & "`$PROJECT_DIR\scripts\daemon.ps1" start *>`> `$null
-      Pop-Location
-      Write-Log "Daemon restart initiated" -Level "RESTART"
-    } catch {
-      Write-Log "Restart failed: `$_" -Level "ERROR"
-    }
+  $watchdogScript = Join-Path $PROJECT_DIR "scripts\watchdog.ps1"
+  if (-not (Test-Path $watchdogScript)) {
+    Write-Host "  Watchdog script not found at $watchdogScript" -ForegroundColor Yellow
+    return
   }
-}
-"@
+
+  Write-Host "Starting watchdog..." -ForegroundColor Cyan
 
   $watchdogProc = Start-Process -FilePath "powershell" -ArgumentList @(
     "-ExecutionPolicy", "Bypass",
     "-NoProfile",
-    "-Command", "& { $watchdogScript }"
+    "-File", "`"$watchdogScript`""
   ) -WindowStyle Hidden -PassThru
 
   Write-Host "  Watchdog (PID: $($watchdogProc.Id)): active" -ForegroundColor DarkGray
@@ -283,11 +243,11 @@ function Stop-Watchdog {
 
 function Get-WatchdogPid {
   if (-not (Test-Path $WATCHDOG_FILE)) { return $null }
-  $pid = Get-Content $WATCHDOG_FILE -Raw | ForEach-Object { $_.Trim() }
-  if (-not $pid -or -not ($pid -match '^\d+$')) { return $null }
+  $rawPid = Get-Content $WATCHDOG_FILE -Raw | ForEach-Object { $_.Trim() }
+  if (-not $rawPid -or -not ($rawPid -match '^\d+$')) { return $null }
   try {
-    $proc = Get-Process -Id ([int]$pid) -ErrorAction Stop
-    if ($proc.ProcessName -eq 'powershell') { return [int]$pid }
+    $proc = Get-Process -Id ([int]$rawPid) -ErrorAction Stop
+    if ($proc.ProcessName -eq 'powershell') { return [int]$rawPid }
     return $null
   } catch { return $null }
 }
