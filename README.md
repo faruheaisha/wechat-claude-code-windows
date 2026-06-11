@@ -1,0 +1,161 @@
+# WeChat Claude Code Bridge (Windows 版)
+
+<p align="center">
+  <strong>在微信中与 Claude Code 聊天，就像给朋友发消息一样简单</strong>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License: MIT"></a>
+  <a href="https://github.com/faruheaisha/wechat-claude-code-windows"><img src="https://img.shields.io/badge/Windows-ready-blue?style=flat-square" alt="Windows"></a>
+  <a href="README_en.md"><img src="https://img.shields.io/badge/Lang-English-blue?style=flat-square" alt="English"></a>
+</p>
+
+扫描二维码绑定微信，你的通讯录里会出现一个新的"好友"。给它发消息 —— 消息会被转发到你电脑上运行的 Claude Code，回复实时推送到微信。支持文字、图片、语音和文件。
+
+本项目是 [Wechat-ggGitHub/wechat-claude-code](https://github.com/Wechat-ggGitHub/wechat-claude-code) 的 **Windows 适配分支**。原项目仅支持 macOS/Linux，本分支增加了 Windows 原生支持。
+
+---
+
+## 特点
+
+| | |
+|---|---|
+| **扫码即用** | 无需注册账号，无需部署服务器。扫描二维码即可绑定，所有数据存储在你的电脑上。 |
+| **消息干净** | 仅推送核心信息 —— 进度、结果、关键决策。工具调用和中间过程自动过滤。 |
+| **"正在输入..."提示** | Claude 处理时微信会显示"对方正在输入..."，让你随时知道它正在工作。 |
+| **双端文件传输** | 发送图片、Word、PDF 给 Claude 分析；Claude 生成的文件自动推送到微信。 |
+| **超时安抚** | 任务超过 5 分钟未响应，会自动发送消息告知你仍在处理中。 |
+
+---
+
+## 安装前提
+
+- **Windows 10/11**（64位）
+- **Node.js >= 18** — 从 [nodejs.org](https://nodejs.org) 下载安装（安装时勾选"Add to PATH"）
+- **个人微信账号**
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI** — 已安装并完成认证
+  - 可通过 `npm install -g @anthropic-ai/claude-code` 安装
+  - 支持第三方 API 提供商（如 OpenRouter、DeepSeek 等），设置 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_API_KEY` 即可
+- **Git** — 从 [git-scm.com](https://git-scm.com) 下载安装
+
+---
+
+## 安装
+
+### 方法一：skills CLI（推荐）
+
+```powershell
+npx skills add faruheaisha/wechat-claude-code-windows
+```
+
+首次触发 skill 时会自动克隆源码并安装依赖。
+
+### 方法二：手动克隆
+
+```powershell
+git clone https://github.com/faruheaisha/wechat-claude-code-windows.git $env:USERPROFILE\.claude\skills\wechat-claude-code-windows
+cd $env:USERPROFILE\.claude\skills\wechat-claude-code-windows
+npm install
+```
+
+---
+
+## 快速开始
+
+### 1. 绑定微信
+
+```powershell
+cd $env:USERPROFILE\.claude\skills\wechat-claude-code-windows
+npm run setup
+```
+
+会弹出二维码图片，用微信扫描即可。
+
+### 2. 启动服务
+
+```powershell
+npm run daemon -- start
+```
+
+### 3. 开始聊天
+
+打开微信，给你的新"好友"发消息。
+
+### 服务管理
+
+```powershell
+npm run daemon -- status    # 查看运行状态
+npm run daemon -- stop      # 停止服务
+npm run daemon -- restart   # 重启（代码更新后使用）
+npm run daemon -- logs      # 查看日志
+```
+
+---
+
+## 微信命令
+
+在微信聊天中直接发送以下命令：
+
+| 命令 | 说明 |
+|------|------|
+| `/help` | 显示帮助 |
+| `/clear` | 清除当前会话，开始新对话 |
+| `/stop` | 停止当前任务 |
+| `/model <name>` | 切换 Claude 模型 |
+| `/prompt <内容>` | 设置系统提示词（如"请用中文回答"） |
+| `/cwd <路径>` | 切换工作目录 |
+| `/skills` | 列出已安装的 Skills |
+| `/status` | 查看当前会话状态 |
+| `/history [条数]` | 查看最近对话历史 |
+| `/compact` | 压缩上下文，开始新的 SDK 会话 |
+| `/reset` | 完全重置（包括工作目录） |
+| `/undo [条数]` | 撤销最近 N 条消息 |
+| `/<skill> [参数]` | 触发任意已安装 Skill |
+
+---
+
+## 数据目录
+
+所有数据存储在 `%USERPROFILE%\.wechat-claude-code\`：
+
+```
+%USERPROFILE%\.wechat-claude-code\
+├── accounts\       # 微信账号凭据
+├── config.json     # 全局配置
+├── sessions\       # 会话数据
+└── logs\           # 日志文件（每日轮转，保留30天）
+```
+
+---
+
+## Windows 适配说明
+
+相比原版 macOS/Linux 版本，此 Windows 分支做了以下适配：
+
+| 改动项 | 说明 |
+|--------|------|
+| **daemon.ps1** | 使用 PowerShell 脚本替代 bash daemon.sh，通过 System.Diagnostics.Process 管理后台进程 |
+| **provider.ts** | 修正 claude 命令路径（Windows 使用 claude.cmd），添加 shell:true 以解析 .cmd 文件 |
+| **进程管理** | 使用 `taskkill` 替代 `SIGTERM` 信号（Windows 不支持 POSIX 信号） |
+| **路径处理** | 新增 Windows 绝对路径（`C:\...`）的正则匹配；使用 `USERPROFILE` 替代 `HOME` |
+| **chmod 跳过** | 原有 `chmodSync` 在 Windows 上自动跳过（已有 `process.platform !== 'win32'` 守卫） |
+| **自动启动** | 推荐使用「启动」文件夹或任务计划程序实现开机自启（详见 INSTALL_zh.md） |
+
+---
+
+## 路线图
+
+- **消息队列优化** — 连续消息可能导致回复混乱，正在改进队列策略
+- **系统休眠防护** — 使用电源设置防止 Windows 休眠时服务中断
+- **桌面会话延续** — 在电脑上聊天后，从微信继续同一会话
+
+---
+
+## 开源协议
+
+[MIT](LICENSE)
+
+### 致谢
+
+- 感谢 [Wechat-ggGitHub](https://github.com/Wechat-ggGitHub) 的原始 macOS 版项目
+- 感谢 iBot / ClawBot 团队的微信 Bot API
