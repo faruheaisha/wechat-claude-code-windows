@@ -102,6 +102,58 @@ npm run daemon -- logs      # 查看日志
 
 ---
 
+## 云服务器部署（24/7 不间断运行）
+
+如果需要 **不依赖本地电脑、24 小时在线**，可以将桥接服务部署到云服务器上。
+
+### 前置条件
+
+- 任意 Ubuntu 22.04+ VPS（可使用 GitHub Student Pack 的 DigitalOcean $200 额度，选择 $4/月 Droplet）
+- SSH 登录权限
+- 微信扫码绑定 + Claude Code CLI 认证
+
+### 一键部署
+
+SSH 登录到云服务器后，执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/faruheaisha/wechat-claude-code-windows/main/scripts/deploy-cloud.sh | bash
+```
+
+脚本会自动完成：安装 Node.js → 克隆仓库 → 安装依赖 → 安装 Claude Code CLI → 配置 systemd 开机自启。
+
+### 部署后配置
+
+```bash
+# 1. 微信扫码绑定
+node /opt/wechat-claude-code/dist/main.js setup
+
+# 2. 认证 Claude Code CLI
+su - wcc-bridge -c 'claude'
+
+# 3. 启动服务
+systemctl start wechat-bridge
+
+# 4. 查看状态
+systemctl status wechat-bridge
+
+# 5. 实时日志
+journalctl -u wechat-bridge -f
+```
+
+### 架构对比
+
+```
+本地运行:  微信 ←→ ilink API ←→ Node.js(本机) ←→ Claude Code(本机)     ❌ 关机即停
+云服务器:  微信 ←→ ilink API ←→ Node.js(云端) ←→ Claude Code(云端)     ✅ 24/7 在线
+```
+
+部署后微信上的对话由云服务器处理，本地电脑关机不影响正常使用。
+
+> **注意:** 云服务器上的 Claude Code 访问的是云端的文件系统，无法操作你本地电脑上的文件。项目代码可通过 Git 同步到服务器。
+
+---
+
 ## 微信命令
 
 在微信聊天中直接发送以下命令：

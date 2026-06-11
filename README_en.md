@@ -102,6 +102,57 @@ npm run daemon -- logs      # View recent logs
 
 ---
 
+## Cloud Deployment (24/7 Operation)
+
+For **true around-the-clock operation** without relying on your local machine, deploy the bridge to a cloud server.
+
+### Prerequisites
+
+- Any Ubuntu 22.04+ VPS (use your GitHub Student Pack DigitalOcean $200 credit with a $4/month Droplet)
+- SSH access to the server
+
+### One-Click Deploy
+
+SSH into your server and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/faruheaisha/wechat-claude-code-windows/main/scripts/deploy-cloud.sh | bash
+```
+
+The script handles: Node.js install → repo clone → dependency install → Claude Code CLI setup → systemd service configuration.
+
+### Post-Deploy Setup
+
+```bash
+# 1. Bind WeChat
+node /opt/wechat-claude-code/dist/main.js setup
+
+# 2. Authenticate Claude Code CLI
+su - wcc-bridge -c 'claude'
+
+# 3. Start the service
+systemctl start wechat-bridge
+
+# 4. Check status
+systemctl status wechat-bridge
+
+# 5. Live logs
+journalctl -u wechat-bridge -f
+```
+
+### Architecture Comparison
+
+```
+Local:      WeChat ←→ ilink API ←→ Node.js(local) ←→ Claude Code(local)      ❌ stops on shutdown
+Cloud:      WeChat ←→ ilink API ←→ Node.js(cloud) ←→ Claude Code(cloud)      ✅ 24/7 online
+```
+
+Once deployed, your local machine can be turned off — messages from WeChat will still be handled by the cloud server.
+
+> **Note:** Claude Code on the cloud server accesses the server's filesystem, not your local computer's files. Sync projects via Git if needed.
+
+---
+
 ## WeChat Commands
 
 Send these directly in the WeChat chat:
